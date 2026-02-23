@@ -66,6 +66,12 @@ npm install -g @anthropic-ai/claude-code
 claude
 ```
 
+If you use `/tui`, install tmux:
+
+```bash
+brew install tmux
+```
+
 ## Usage
 
 ### Start the Bot
@@ -106,14 +112,21 @@ python3 -m bot.main
 3. **/run <command>** - Execute commands in Claude CLI
    - Example: `/run ls -la`
    - Description: Execute natural language instructions or commands
-4. **/pull <path>** - Pull files from macOS to Telegram
+4. **/tui <command>** - Execute commands in Claude Code TUI
+   - Example: `/tui hello`
+   - Description: Send commands to Claude Code via tmux session
+5. **/tui-capture [n]** - Get recent TUI output
+   - Example: `/tui-capture 80`
+6. **/tui-start** - Start the TUI session
+7. **/tui-stop** - Stop the TUI session
+8. **/pull <path>** - Pull files from macOS to Telegram
    - Example: `/pull ~/Documents/report.txt`
-5. **/push <file>** - Push files from Telegram to macOS
+9. **/push <file>** - Push files from Telegram to macOS
    - Usage: Reply to the file you want to push and send `/push` command
-6. **/sessions [n]** - List recent n Claude sessions
+10. **/sessions [n]** - List recent n Claude sessions
    - Example: `/sessions 10`
    - Description: Defaults to listing 10 recent sessions
-7. **/session set <id>** - Set fixed session
+11. **/session set <id>** - Set fixed session
    - Example: `/session set 1234-abcde`
    - Description: After setting a fixed session, /run commands will use this session by default
 
@@ -176,6 +189,13 @@ For detailed configuration options, please refer to `config/settings.py`. Main c
 | TELEGRAM_ADMIN_IDS | List of admin user IDs (comma-separated) | Empty |
 | CLAUDE_CLI_PATH | Path to Claude CLI executable | `claude` |
 | EXECUTION_TIMEOUT | Command execution timeout (seconds) | 300 |
+| CLAUDE_TUI_CMD | Claude Code TUI launch command | `claude` |
+| TUI_SESSION_NAME | tmux session name | `clawbot-claude` |
+| TUI_CAPTURE_LINES | Default TUI capture lines | 80 |
+| TUI_CAPTURE_DELAY | Delay after send (seconds) | 0.8 |
+| TUI_LOG_FILE | TUI output log filename | `tui_output.log` |
+| TUI_REPLY_MAX_LINES | Max TUI reply lines | 40 |
+| TUI_REPLY_MAX_CHARS | Max TUI reply chars | 2000 |
 | WORKSPACE_DIR | Working directory | `~/clawbot_workspace` |
 | LOG_LEVEL | Log level | DEBUG |
 | SANDBOX_ENABLED | Whether to enable sandbox | True |

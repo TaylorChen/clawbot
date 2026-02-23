@@ -2,6 +2,9 @@
 import subprocess
 import os
 import json
+import shlex
+import re
+import time
 from datetime import datetime
 from loguru import logger
 from config.settings import settings
@@ -264,6 +267,343 @@ def list_sessions(limit: int = 10, active_minutes: int = 60) -> dict:
         return {
             "success": True,
             "message": "\n".join(lines)
+        }
+    except Exception as e:
+        logger.exception("列出会话过程中发生错误")
+        return {
+            "success": False,
+            "message": f"列出会话失败: {str(e)}"
+        }
+
+
+def _tmux_run(args: list[str], *, timeout: float = 5.0) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["tmux", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.CompletedProcess(
+            args=["tmux", *args],
+            returncode=124,
+            stdout="",
+            stderr="tmux command timed out",
+        )
+
+
+def _ensure_tui_session() -> dict:
+    session_name = settings.TUI_SESSION_NAME
+    log_path = os.path.join(settings.LOG_DIR, settings.TUI_LOG_FILE)
+    os.makedirs(settings.LOG_DIR, exist_ok=True)
+    has = _tmux_run(["has-session", "-t", session_name])
+    if has.returncode == 0:
+        _tmux_run(["pipe-pane", "-o", "-t", session_name, f"cat >> {log_path}"])
+        return {"success": True, "message": "TUI 会话已存在"}
+
+    cmd = ["new-session", "-d", "-s", session_name, "-c", settings.WORKSPACE_DIR]
+    cmd.extend(shlex.split(settings.CLAUDE_TUI_CMD))
+    created = _tmux_run(cmd)
+    if created.returncode != 0:
+        return {
+            "success": False,
+            "message": f"启动 TUI 会话失败: {created.stderr.strip()}"
+        }
+    _tmux_run(["pipe-pane", "-o", "-t", session_name, f"cat >> {log_path}"])
+    return {"success": True, "message": "TUI 会话已启动"}
+
+
+def _capture_tui_raw(lines: int | None = None) -> dict:
+    session_name = settings.TUI_SESSION_NAME
+    capture_lines = lines or settings.TUI_CAPTURE_LINES
+    logger.info(f"TUI capture 请求: session={session_name}, lines={capture_lines}")
+    result = _tmux_run([
+        "capture-pane",
+        "-p",
+        "-e",
+        "-J",
+        "-a",
+        "-t",
+        session_name,
+        "-S",
+        f"-{int(capture_lines)}",
+    ])
+    if result.returncode != 0 and "no alternate screen" in (result.stderr or ""):
+        result = _tmux_run([
+            "capture-pane",
+            "-p",
+            "-e",
+            "-J",
+            "-t",
+            session_name,
+            "-S",
+            f"-{int(capture_lines)}",
+        ])
+    if result.returncode == 124:
+        return {
+            "success": False,
+            "message": "获取 TUI 输出超时，请重试"
+        }
+    logger.info(
+        f"TUI capture 结果: code={result.returncode}, stdout_len={len(result.stdout)}, stderr='{result.stderr.strip()}'"
+    )
+    if result.returncode != 0:
+        return {
+            "success": False,
+            "message": f"获取 TUI 输出失败: {result.stderr.strip()}"
+        }
+    output = result.stdout
+    if output:
+        # Strip ANSI escape sequences and non-printable chars (keep newlines/tabs)
+        output = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", output)
+        output = re.sub(r"\x1b\][^\x07]*\x07", "", output)
+        output = "".join(ch for ch in output if ch == "\n" or ch == "\t" or ch >= " ")
+        output = output.strip()
+    if output:
+        return {
+            "success": True,
+            "message": output
+        }
+
+    log_path = os.path.join(settings.LOG_DIR, settings.TUI_LOG_FILE)
+    if os.path.isfile(log_path):
+        try:
+            with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+                data = f.readlines()
+            tail = "".join(data[-max(1, int(capture_lines)):]).strip()
+            if tail:
+                return {
+                    "success": True,
+                    "message": tail
+                }
+        except Exception:
+            pass
+    return {
+        "success": True,
+        "message": "(no output)"
+    }
+
+
+def _capture_tui(lines: int | None = None) -> dict:
+    raw = _capture_tui_raw(lines=lines)
+    if not raw.get("success"):
+        return raw
+    message = raw.get("message", "")
+    if message and message != "(no output)":
+        message = _limit_tui_output(message)
+    return {
+        "success": True,
+        "message": message
+    }
+
+
+def _limit_tui_output(text: str) -> str:
+    reply = _extract_tui_reply(text)
+    if not reply:
+        # Fallback: keep only the tail
+        lines = [ln.rstrip() for ln in text.splitlines()]
+        tail = lines
+        if settings.TUI_REPLY_MAX_LINES > 0:
+            tail = tail[-settings.TUI_REPLY_MAX_LINES:]
+        reply = "\n".join(tail).strip()
+
+    if settings.TUI_REPLY_MAX_CHARS > 0 and len(reply) > settings.TUI_REPLY_MAX_CHARS:
+        reply = reply[-settings.TUI_REPLY_MAX_CHARS:]
+    return reply.strip() or "(no output)"
+
+
+def _extract_tui_reply(text: str) -> str:
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    reply_lines: list[str] = []
+    latest_reply: list[str] = []
+    for ln in lines:
+        if ln.strip().startswith(("⏺", "●")):
+            # Start a new reply block
+            reply_lines = [ln.strip()]
+            continue
+        if reply_lines:
+            if ln.strip().startswith(("❯", ">", "esc to interrupt", "✗", "✢", "─")):
+                latest_reply = reply_lines
+                reply_lines = []
+                continue
+            if ln.strip():
+                reply_lines.append(ln.strip())
+    if reply_lines:
+        latest_reply = reply_lines
+    return "\n".join(latest_reply).strip()
+
+
+def _extract_reply_after_prompt(text: str, command: str) -> str:
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    needle = command.strip()
+    if len(needle) > 32:
+        needle = needle[-32:]
+    last_idx = -1
+    for i, ln in enumerate(lines):
+        if needle and needle in ln:
+            last_idx = i
+    if last_idx == -1:
+        return ""
+    reply_lines: list[str] = []
+    for ln in lines[last_idx + 1:]:
+        if ln.strip().startswith(("⏺", "●")):
+            reply_lines = [ln.strip()]
+            continue
+        if reply_lines:
+            if ln.strip().startswith(("❯", ">", "esc to interrupt", "✗", "✢", "─")):
+                break
+            if ln.strip():
+                reply_lines.append(ln.strip())
+    return "\n".join(reply_lines).strip()
+
+
+def run_tui_command(user_id: int, command: str, *, capture_lines: int | None = None) -> dict:
+    """
+    在 Claude Code TUI 中执行命令（tmux 会话）
+    """
+    logger.info(f"用户 {user_id} 尝试执行 TUI 命令: {command}")
+
+    if not is_command_allowed(command):
+        logger.warning(f"用户 {user_id} 尝试执行禁止的命令: {command}")
+        log_command_execution(user_id, f"tui:{command}", False, "禁止的命令")
+        return {
+            "success": False,
+            "message": "命令包含禁止关键词，请检查后重试"
+        }
+
+    try:
+        ensure = _ensure_tui_session()
+        if not ensure["success"]:
+            log_command_execution(user_id, f"tui:{command}", False, ensure["message"])
+            return ensure
+
+        session_name = settings.TUI_SESSION_NAME
+        before = _capture_tui_raw(lines=capture_lines)
+        before_reply = _extract_tui_reply(before.get("message", ""))
+
+        # Ensure not stuck in copy-mode and send a real Enter key
+        _tmux_run(["send-keys", "-t", session_name, "-X", "cancel"])
+        _tmux_run(["send-keys", "-t", session_name, "C-u"])
+        _tmux_run(["send-keys", "-t", session_name, "-l", command])
+        send = _tmux_run(["send-keys", "-t", session_name, "Enter"])
+        if send.returncode != 0:
+            msg = send.stderr.strip() or "发送指令失败"
+            log_command_execution(user_id, f"tui:{command}", False, msg)
+            return {"success": False, "message": msg}
+
+        # 多次抓取，给 TUI 留出渲染时间
+        output = None
+        for _ in range(6):
+            time.sleep(settings.TUI_CAPTURE_DELAY)
+            current = _capture_tui_raw(lines=capture_lines)
+            if current["success"]:
+                current_reply = _extract_reply_after_prompt(current.get("message", ""), command)
+                if not current_reply:
+                    current_reply = _extract_tui_reply(current.get("message", ""))
+                if current_reply and current_reply != before_reply:
+                    output = {
+                        "success": True,
+                        "message": _limit_tui_output(current_reply)
+                    }
+                    break
+            output = current
+
+        if output is None:
+            output = {
+                "success": True,
+                "message": "(no output)"
+            }
+
+        log_command_execution(
+            user_id,
+            f"tui:{command}",
+            output["success"],
+            output["message"] if output["success"] else output["message"],
+        )
+        return output
+    except FileNotFoundError:
+        log_command_execution(user_id, f"tui:{command}", False, "tmux 未找到")
+        return {
+            "success": False,
+            "message": "tmux 未找到，请先安装 tmux"
+        }
+    except Exception as e:
+        logger.exception(f"TUI 命令执行过程中发生错误: {command}")
+        log_command_execution(user_id, f"tui:{command}", False, str(e))
+        return {
+            "success": False,
+            "message": f"执行过程中发生错误: {str(e)}"
+        }
+
+
+def start_tui_session(user_id: int) -> dict:
+    try:
+        ensure = _ensure_tui_session()
+        log_command_execution(user_id, "tui:start", ensure["success"], ensure["message"])
+        return ensure
+    except FileNotFoundError:
+        log_command_execution(user_id, "tui:start", False, "tmux 未找到")
+        return {
+            "success": False,
+            "message": "tmux 未找到，请先安装 tmux"
+        }
+    except Exception as e:
+        logger.exception("TUI 会话启动过程中发生错误")
+        log_command_execution(user_id, "tui:start", False, str(e))
+        return {
+            "success": False,
+            "message": f"执行过程中发生错误: {str(e)}"
+        }
+
+
+def capture_tui_output(user_id: int, *, lines: int | None = None) -> dict:
+    try:
+        output = _capture_tui(lines=lines)
+        log_command_execution(
+            user_id,
+            "tui:capture",
+            output["success"],
+            output["message"] if output["success"] else output["message"],
+        )
+        return output
+    except FileNotFoundError:
+        log_command_execution(user_id, "tui:capture", False, "tmux 未找到")
+        return {
+            "success": False,
+            "message": "tmux 未找到，请先安装 tmux"
+        }
+    except Exception as e:
+        logger.exception("TUI 输出获取过程中发生错误")
+        log_command_execution(user_id, "tui:capture", False, str(e))
+        return {
+            "success": False,
+            "message": f"执行过程中发生错误: {str(e)}"
+        }
+
+
+def stop_tui_session(user_id: int) -> dict:
+    try:
+        session_name = settings.TUI_SESSION_NAME
+        killed = _tmux_run(["kill-session", "-t", session_name])
+        if killed.returncode != 0:
+            msg = killed.stderr.strip() or "停止失败"
+            log_command_execution(user_id, "tui:stop", False, msg)
+            return {"success": False, "message": msg}
+        log_command_execution(user_id, "tui:stop", True, "已停止")
+        return {"success": True, "message": "TUI 会话已停止"}
+    except FileNotFoundError:
+        log_command_execution(user_id, "tui:stop", False, "tmux 未找到")
+        return {
+            "success": False,
+            "message": "tmux 未找到，请先安装 tmux"
+        }
+    except Exception as e:
+        logger.exception("TUI 会话停止过程中发生错误")
+        log_command_execution(user_id, "tui:stop", False, str(e))
+        return {
+            "success": False,
+            "message": f"执行过程中发生错误: {str(e)}"
         }
     except Exception as e:
         return {

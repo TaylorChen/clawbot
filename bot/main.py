@@ -7,7 +7,16 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart, Command
 from config.settings import settings
 from security import is_user_allowed
-from executor import run_command, pull_file, push_file, list_sessions
+from executor import (
+    run_command,
+    pull_file,
+    push_file,
+    list_sessions,
+    run_tui_command,
+    capture_tui_output,
+    start_tui_session,
+    stop_tui_session,
+)
 
 SESSION_BINDINGS_FILE = os.path.join(settings.LOG_DIR, "session_bindings.json")
 
@@ -58,6 +67,14 @@ else:
 
 # 初始化 Dispatcher
 dp = Dispatcher()
+TELEGRAM_MAX_LEN = 4000
+
+async def _send_long_message(message: types.Message, text: str) -> None:
+    if len(text) <= TELEGRAM_MAX_LEN:
+        await message.answer(text)
+        return
+    for i in range(0, len(text), TELEGRAM_MAX_LEN):
+        await message.answer(text[i:i + TELEGRAM_MAX_LEN])
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
@@ -81,6 +98,10 @@ async def cmd_start(message: types.Message):
         "/run --continue <command> - 继续最近会话执行\n"
         "/sessions [n] - 列出最近 n 个 Claude 会话\n"
         "/session set <id> - 固定会话\n"
+        "/tui <command> - 在 Claude Code TUI 中执行命令\n"
+        "/tui-capture [n] - 获取 TUI 最近输出（也支持 /tui_capture）\n"
+        "/tui-start - 启动 TUI 会话\n"
+        "/tui-stop - 停止 TUI 会话\n"
         "/pull <file_path> - 拉取文件到 Telegram\n"
         "/push <file> - 推送文件到 macOS\n"
         "/help - 显示帮助信息"
@@ -113,6 +134,12 @@ async def cmd_help(message: types.Message):
         "  示例：/sessions 10\n"
         "/session set <id> - 固定会话\n"
         "  示例：/session set 1234-...\n"
+        "/tui <command> - 在 Claude Code TUI 中执行命令\n"
+        "  示例：/tui 帮我总结这个项目结构\n"
+        "/tui-capture [n] - 获取 TUI 最近输出（也支持 /tui_capture）\n"
+        "  示例：/tui-capture 80\n"
+        "/tui-start - 启动 TUI 会话\n"
+        "/tui-stop - 停止 TUI 会话\n"
         "/pull <file_path> - 拉取文件到 Telegram\n"
         "  示例：/pull ~/Documents/report.txt\n"
         "/push <file> - 推送文件到 macOS\n"
@@ -237,9 +264,103 @@ async def cmd_run(message: types.Message):
 
     # 格式化回复
     if result["success"]:
-        await message.answer(f"✅ 执行成功\n\n{result['message']}")
+        await _send_long_message(message, f"✅ 执行成功\n\n{result['message']}")
     else:
         await message.answer(f"❌ 执行失败\n\n{result['message']}")
+
+@dp.message(Command("tui"))
+async def cmd_tui(message: types.Message):
+    """
+    处理 /tui 命令
+    """
+    user_id = message.from_user.id
+    logger.info(f"用户 {user_id} 发送 /tui 命令")
+
+    if not is_user_allowed(user_id):
+        logger.warning(f"禁止用户 {user_id} 访问")
+        await message.answer("你没有访问权限，请联系管理员")
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("请提供要执行的命令\n\n示例：/tui 你好")
+        return
+
+    command = parts[1].strip()
+    result = run_tui_command(user_id, command)
+
+    if result["success"]:
+        await _send_long_message(message, f"✅ 已发送到 TUI\n\n{result['message']}")
+    else:
+        await message.answer(f"❌ 执行失败\n\n{result['message']}")
+
+@dp.message(Command("tui-capture"))
+@dp.message(Command("tui_capture"))
+@dp.message(Command("tuicapture"))
+async def cmd_tui_capture(message: types.Message):
+    """
+    处理 /tui-capture 命令
+    """
+    user_id = message.from_user.id
+    logger.info(f"用户 {user_id} 发送 /tui-capture 命令")
+
+    if not is_user_allowed(user_id):
+        logger.warning(f"禁止用户 {user_id} 访问")
+        await message.answer("你没有访问权限，请联系管理员")
+        return
+
+    parts = message.text.split(maxsplit=1)
+    lines = None
+    if len(parts) == 2:
+        try:
+            lines = int(parts[1].strip())
+        except ValueError:
+            await message.answer("参数必须是数字，例如：/tui-capture 80")
+            return
+
+    result = capture_tui_output(user_id, lines=lines)
+    if result["success"]:
+        await _send_long_message(message, f"✅ TUI 输出\n\n{result['message']}")
+    else:
+        await message.answer(f"❌ 获取失败\n\n{result['message']}")
+
+@dp.message(Command("tui-start"))
+async def cmd_tui_start(message: types.Message):
+    """
+    处理 /tui-start 命令
+    """
+    user_id = message.from_user.id
+    logger.info(f"用户 {user_id} 发送 /tui-start 命令")
+
+    if not is_user_allowed(user_id):
+        logger.warning(f"禁止用户 {user_id} 访问")
+        await message.answer("你没有访问权限，请联系管理员")
+        return
+
+    result = start_tui_session(user_id)
+    if result["success"]:
+        await message.answer(f"✅ {result['message']}")
+    else:
+        await message.answer(f"❌ {result['message']}")
+
+@dp.message(Command("tui-stop"))
+async def cmd_tui_stop(message: types.Message):
+    """
+    处理 /tui-stop 命令
+    """
+    user_id = message.from_user.id
+    logger.info(f"用户 {user_id} 发送 /tui-stop 命令")
+
+    if not is_user_allowed(user_id):
+        logger.warning(f"禁止用户 {user_id} 访问")
+        await message.answer("你没有访问权限，请联系管理员")
+        return
+
+    result = stop_tui_session(user_id)
+    if result["success"]:
+        await message.answer(f"✅ {result['message']}")
+    else:
+        await message.answer(f"❌ {result['message']}")
 
 @dp.message(Command("pull"))
 async def cmd_pull(message: types.Message):

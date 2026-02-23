@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # 执行配置
     CLAUDE_CLI_PATH: str = "claude"
     EXECUTION_TIMEOUT: int = 300  # 执行超时时间（秒）
+    CLAUDE_TUI_CMD: str = "claude"  # Claude Code TUI 启动命令
+    TUI_SESSION_NAME: str = "clawbot-claude"
+    TUI_CAPTURE_LINES: int = 80
+    TUI_CAPTURE_DELAY: float = 0.8  # 发送指令后等待输出（秒）
+    TUI_LOG_FILE: str = "tui_output.log"
+    TUI_REPLY_MAX_LINES: int = 40
+    TUI_REPLY_MAX_CHARS: int = 2000
 
     # 日志配置
     LOG_DIR: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")

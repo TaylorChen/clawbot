@@ -66,6 +66,12 @@ npm install -g @anthropic-ai/claude-code
 claude
 ```
 
+如果使用 /tui，需要安装 tmux：
+
+```bash
+brew install tmux
+```
+
 ## 使用
 
 ### 启动 Bot
@@ -106,14 +112,21 @@ python3 -m bot.main
 3. **/run <command>** - 在 Claude CLI 中执行命令
    - 示例：`/run ls -la`
    - 说明：执行自然语言指令或命令
-4. **/pull <path>** - 拉取文件到 Telegram
+4. **/tui <command>** - 在 Claude Code TUI 中执行命令
+   - 示例：`/tui 你好`
+   - 说明：通过 tmux 会话发送指令到 Claude Code
+5. **/tui-capture [n]** - 获取 TUI 最近输出
+   - 示例：`/tui-capture 80`
+6. **/tui-start** - 启动 TUI 会话
+7. **/tui-stop** - 停止 TUI 会话
+8. **/pull <path>** - 拉取文件到 Telegram
    - 示例：`/pull ~/Documents/report.txt`
-5. **/push <file>** - 推送文件到 macOS
+9. **/push <file>** - 推送文件到 macOS
    - 使用方法：回复要推送的文件并发送 `/push` 命令
-6. **/sessions [n]** - 列出最近 n 个 Claude 会话
+10. **/sessions [n]** - 列出最近 n 个 Claude 会话
    - 示例：`/sessions 10`
    - 说明：默认列出最近 10 个会话
-7. **/session set <id>** - 固定会话
+11. **/session set <id>** - 固定会话
    - 示例：`/session set 1234-abcde`
    - 说明：设置固定会话后，/run 命令默认使用该会话
 
@@ -176,6 +189,13 @@ Telegram → Bot 接口 → 安全检查 → 执行器 → Claude CLI → 结果
 | TELEGRAM_ADMIN_IDS | 管理员用户 ID 列表（逗号分隔） | 空 |
 | CLAUDE_CLI_PATH | Claude CLI 路径 | `claude` |
 | EXECUTION_TIMEOUT | 命令执行超时时间（秒） | 300 |
+| CLAUDE_TUI_CMD | Claude Code TUI 启动命令 | `claude` |
+| TUI_SESSION_NAME | tmux 会话名 | `clawbot-claude` |
+| TUI_CAPTURE_LINES | TUI 默认抓取行数 | 80 |
+| TUI_CAPTURE_DELAY | 发送指令后等待输出（秒） | 0.8 |
+| TUI_LOG_FILE | TUI 输出日志文件名 | `tui_output.log` |
+| TUI_REPLY_MAX_LINES | TUI 回传最大行数 | 40 |
+| TUI_REPLY_MAX_CHARS | TUI 回传最大字符数 | 2000 |
 | WORKSPACE_DIR | 工作目录 | `~/clawbot_workspace` |
 | LOG_LEVEL | 日志级别 | DEBUG |
 | SANDBOX_ENABLED | 是否启用沙盒 | True |
