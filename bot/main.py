@@ -67,14 +67,19 @@ else:
 
 # 初始化 Dispatcher
 dp = Dispatcher()
-TELEGRAM_MAX_LEN = 4000
+TELEGRAM_MAX_LEN = 3500
 
 async def _send_long_message(message: types.Message, text: str) -> None:
     if len(text) <= TELEGRAM_MAX_LEN:
         await message.answer(text)
         return
+    chunks = []
     for i in range(0, len(text), TELEGRAM_MAX_LEN):
-        await message.answer(text[i:i + TELEGRAM_MAX_LEN])
+        chunks.append(text[i:i + TELEGRAM_MAX_LEN])
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks, start=1):
+        header = f"[{idx}/{total}]\n"
+        await message.answer(header + chunk)
 
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):

@@ -191,11 +191,13 @@ Telegram → Bot 接口 → 安全检查 → 执行器 → Claude CLI → 结果
 | EXECUTION_TIMEOUT | 命令执行超时时间（秒） | 300 |
 | CLAUDE_TUI_CMD | Claude Code TUI 启动命令 | `claude` |
 | TUI_SESSION_NAME | tmux 会话名 | `clawbot-claude` |
-| TUI_CAPTURE_LINES | TUI 默认抓取行数 | 80 |
-| TUI_CAPTURE_DELAY | 发送指令后等待输出（秒） | 0.8 |
+| TUI_CAPTURE_LINES | TUI 默认抓取行数 | 200 |
+| TUI_CAPTURE_DELAY | 发送指令后等待输出（秒） | 3.0 |
 | TUI_LOG_FILE | TUI 输出日志文件名 | `tui_output.log` |
 | TUI_REPLY_MAX_LINES | TUI 回传最大行数 | 40 |
-| TUI_REPLY_MAX_CHARS | TUI 回传最大字符数 | 2000 |
+| TUI_REPLY_MAX_CHARS | TUI 回传最大字符数 | 4000 |
+| TUI_WAIT_ATTEMPTS | TUI 等待轮数（0 表示只按最大等待时间） | 0 |
+| TUI_MAX_WAIT_SECONDS | TUI 最大等待秒数 | 120 |
 | WORKSPACE_DIR | 工作目录 | `~/clawbot_workspace` |
 | LOG_LEVEL | 日志级别 | DEBUG |
 | SANDBOX_ENABLED | 是否启用沙盒 | True |

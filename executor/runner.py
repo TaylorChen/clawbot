@@ -5,6 +5,7 @@ import json
 import shlex
 import re
 import time
+import uuid
 from datetime import datetime
 from loguru import logger
 from config.settings import settings
@@ -401,15 +402,15 @@ def _capture_tui(lines: int | None = None) -> dict:
 def _limit_tui_output(text: str) -> str:
     reply = _extract_tui_reply(text)
     if not reply:
-        # Fallback: keep only the tail
+        # Fallback: keep only the head
         lines = [ln.rstrip() for ln in text.splitlines()]
-        tail = lines
+        head = lines
         if settings.TUI_REPLY_MAX_LINES > 0:
-            tail = tail[-settings.TUI_REPLY_MAX_LINES:]
-        reply = "\n".join(tail).strip()
+            head = head[:settings.TUI_REPLY_MAX_LINES]
+        reply = "\n".join(head).strip()
 
     if settings.TUI_REPLY_MAX_CHARS > 0 and len(reply) > settings.TUI_REPLY_MAX_CHARS:
-        reply = reply[-settings.TUI_REPLY_MAX_CHARS:]
+        reply = reply[:settings.TUI_REPLY_MAX_CHARS]
     return reply.strip() or "(no output)"
 
 
@@ -436,17 +437,26 @@ def _extract_tui_reply(text: str) -> str:
 
 def _extract_reply_after_prompt(text: str, command: str) -> str:
     lines = [ln.rstrip() for ln in text.splitlines()]
-    needle = command.strip()
-    if len(needle) > 32:
-        needle = needle[-32:]
-    last_idx = -1
-    for i, ln in enumerate(lines):
-        if needle and needle in ln:
-            last_idx = i
-    if last_idx == -1:
+    idxs = _find_prompt_indices(lines, command)
+    if not idxs:
         return ""
+    return _extract_reply_after_index(lines, idxs[-1])
+
+
+def _find_prompt_indices(lines: list[str], command: str) -> list[int]:
+    needle = command.strip()
+    if len(needle) > 24:
+        needle = needle[:24]
+    indices: list[int] = []
+    for i, ln in enumerate(lines):
+        if ln.lstrip().startswith(("❯", ">")) and (not needle or needle in ln):
+            indices.append(i)
+    return indices
+
+
+def _extract_reply_after_index(lines: list[str], start_idx: int) -> str:
     reply_lines: list[str] = []
-    for ln in lines[last_idx + 1:]:
+    for ln in lines[start_idx + 1:]:
         if ln.strip().startswith(("⏺", "●")):
             reply_lines = [ln.strip()]
             continue
@@ -456,6 +466,20 @@ def _extract_reply_after_prompt(text: str, command: str) -> str:
             if ln.strip():
                 reply_lines.append(ln.strip())
     return "\n".join(reply_lines).strip()
+
+
+def _find_next_prompt_index(lines: list[str], start_idx: int) -> int | None:
+    for i in range(start_idx + 1, len(lines)):
+        if lines[i].lstrip().startswith(("❯", ">")):
+            return i
+    return None
+
+
+def _segment_has_reply(lines: list[str]) -> bool:
+    for ln in lines:
+        if ln.strip().startswith(("⏺", "●")):
+            return True
+    return False
 
 
 def run_tui_command(user_id: int, command: str, *, capture_lines: int | None = None) -> dict:
@@ -480,12 +504,19 @@ def run_tui_command(user_id: int, command: str, *, capture_lines: int | None = N
 
         session_name = settings.TUI_SESSION_NAME
         before = _capture_tui_raw(lines=capture_lines)
-        before_reply = _extract_tui_reply(before.get("message", ""))
+        before_text = before.get("message", "")
+        before_reply = _extract_tui_reply(before_text)
+        req_id = uuid.uuid4().hex[:8]
+        tagged_command = f"[[clawbot:{req_id}]] {command}"
+        before_prompts = _find_prompt_indices(
+            [ln.rstrip() for ln in before_text.splitlines()], tagged_command
+        )
+        before_prompt_count = len(before_prompts)
 
         # Ensure not stuck in copy-mode and send a real Enter key
         _tmux_run(["send-keys", "-t", session_name, "-X", "cancel"])
         _tmux_run(["send-keys", "-t", session_name, "C-u"])
-        _tmux_run(["send-keys", "-t", session_name, "-l", command])
+        _tmux_run(["send-keys", "-t", session_name, "-l", tagged_command])
         send = _tmux_run(["send-keys", "-t", session_name, "Enter"])
         if send.returncode != 0:
             msg = send.stderr.strip() or "发送指令失败"
@@ -494,22 +525,64 @@ def run_tui_command(user_id: int, command: str, *, capture_lines: int | None = N
 
         # 多次抓取，给 TUI 留出渲染时间
         output = None
-        for _ in range(6):
+        last_raw = ""
+        found_reply = False
+        max_attempts = int(settings.TUI_WAIT_ATTEMPTS)
+        max_wait = max(1.0, float(settings.TUI_MAX_WAIT_SECONDS))
+        start_ts = time.monotonic()
+        attempts = 0
+        while (time.monotonic() - start_ts) < max_wait and (max_attempts <= 0 or attempts < max_attempts):
+            attempts += 1
             time.sleep(settings.TUI_CAPTURE_DELAY)
             current = _capture_tui_raw(lines=capture_lines)
-            if current["success"]:
-                current_reply = _extract_reply_after_prompt(current.get("message", ""), command)
-                if not current_reply:
-                    current_reply = _extract_tui_reply(current.get("message", ""))
-                if current_reply and current_reply != before_reply:
-                    output = {
-                        "success": True,
-                        "message": _limit_tui_output(current_reply)
-                    }
-                    break
+            if not current.get("success"):
+                continue
+            last_raw = current.get("message", "") or ""
+            current_lines = [ln.rstrip() for ln in last_raw.splitlines()]
+            current_prompts = _find_prompt_indices(current_lines, tagged_command)
+            current_reply = ""
+            if len(current_prompts) > before_prompt_count:
+                start_idx = current_prompts[-1]
+                next_prompt_idx = _find_next_prompt_index(current_lines, start_idx)
+                if next_prompt_idx is None:
+                    done = False
+                    segment = current_lines[start_idx:]
+                else:
+                    segment = current_lines[start_idx:next_prompt_idx]
+                    done = _segment_has_reply(segment)
+                logger.info(
+                    f"TUI wait tick #{attempts}: prompts={len(current_prompts)} done={done} next_prompt={next_prompt_idx is not None}"
+                )
+                if done:
+                    # Extract reply between tagged prompt and next prompt
+                    current_reply = _extract_reply_after_index(segment, 0)
+            if current_reply and current_reply != before_reply:
+                logger.info("TUI reply detected:\n" + current_reply)
+                output = {
+                    "success": True,
+                    "message": current_reply.strip() or "(no output)"
+                }
+                found_reply = True
+                break
+        if not found_reply:
+            elapsed = time.monotonic() - start_ts
+            logger.info(
+                f"TUI wait انته止: attempts={attempts}, elapsed={elapsed:.1f}s, max_wait={max_wait}s"
+            )
             output = current
 
-        if output is None:
+        if not found_reply and last_raw:
+            try:
+                debug_path = os.path.join(settings.LOG_DIR, "tui_last_capture.txt")
+                with open(debug_path, "w", encoding="utf-8", errors="ignore") as f:
+                    f.write(last_raw)
+                logger.info(f"TUI debug capture saved: {debug_path}")
+            except Exception:
+                logger.exception("Failed to save TUI debug capture")
+
+        if output is None or not found_reply:
+            if last_raw:
+                pass
             output = {
                 "success": True,
                 "message": "(no output)"

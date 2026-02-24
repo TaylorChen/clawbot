@@ -191,11 +191,13 @@ For detailed configuration options, please refer to `config/settings.py`. Main c
 | EXECUTION_TIMEOUT | Command execution timeout (seconds) | 300 |
 | CLAUDE_TUI_CMD | Claude Code TUI launch command | `claude` |
 | TUI_SESSION_NAME | tmux session name | `clawbot-claude` |
-| TUI_CAPTURE_LINES | Default TUI capture lines | 80 |
-| TUI_CAPTURE_DELAY | Delay after send (seconds) | 0.8 |
+| TUI_CAPTURE_LINES | Default TUI capture lines | 200 |
+| TUI_CAPTURE_DELAY | Delay after send (seconds) | 3.0 |
 | TUI_LOG_FILE | TUI output log filename | `tui_output.log` |
 | TUI_REPLY_MAX_LINES | Max TUI reply lines | 40 |
-| TUI_REPLY_MAX_CHARS | Max TUI reply chars | 2000 |
+| TUI_REPLY_MAX_CHARS | Max TUI reply chars | 4000 |
+| TUI_WAIT_ATTEMPTS | TUI wait attempts (0 = only max wait) | 0 |
+| TUI_MAX_WAIT_SECONDS | TUI max wait seconds | 120 |
 | WORKSPACE_DIR | Working directory | `~/clawbot_workspace` |
 | LOG_LEVEL | Log level | DEBUG |
 | SANDBOX_ENABLED | Whether to enable sandbox | True |
